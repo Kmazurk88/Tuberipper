@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#121212">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<title>tuberipper · sign in</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #121212; color: #fff; font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { min-height: 100%; display: flex; flex-direction: column; justify-content: center; padding: 28px; max-width: 420px; margin: 0 auto; }
+  img { width: 76px; height: 76px; border-radius: 18px; margin: 0 auto 22px; display: block; }
+  h1 { text-align: center; font-size: 26px; margin: 0 0 24px; }
+  label { display: block; font-size: 14px; font-weight: 700; margin: 14px 0 6px; }
+  input { width: 100%; background: #2a2a2a; border: 1px solid #5a5a5a; border-radius: 6px; color: #fff; padding: 13px 12px; font-size: 16px; outline: none; }
+  input:focus { border-color: #fff; }
+  button { width: 100%; margin-top: 24px; background: #1ed760; color: #000; border: 0; border-radius: 999px; padding: 14px; font-weight: 800; font-size: 16px; }
+  button:disabled { opacity: .6; }
+  #err { color: #f15e6c; min-height: 22px; margin-top: 14px; text-align: center; font-size: 14.5px; }
+</style>
+</head>
+<body>
+<main>
+  <img src="/static/icon-192.png" alt="">
+  <h1>Sign in to tuberipper</h1>
+  <form id="f">
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button id="go" type="submit">Sign in</button>
+    <div id="err" role="alert"></div>
+  </form>
+</main>
+<script>
+  const base = location.pathname.startsWith('/tuberipper') ? '/tuberipper' : '';
+  const next = new URLSearchParams(location.search).get('next');
+  document.getElementById('f').addEventListener('submit', async e => {
+    e.preventDefault();
+    const go = document.getElementById('go'), err = document.getElementById('err');
+    go.disabled = true; err.textContent = '';
+    try {
+      const r = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: document.getElementById('u').value, password: document.getElementById('p').value }) });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) { location.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : base + '/'); return; }
+      err.textContent = d.detail || 'Couldn’t sign in.';
+    } catch (x) { err.textContent = 'Can’t reach the server.'; }
+    go.disabled = false;
+  });
+</script>
+</body>
+</html>

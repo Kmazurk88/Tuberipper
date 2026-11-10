@@ -1,0 +1,44 @@
+const { chromium } = require('playwright');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let failures = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
+(async () => {
+  const b = await chromium.launch();
+  const p = await (await b.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true })).newPage();
+  const nd = (ep) => p.evaluate(async ep => (await (await fetch('api/nd/rest/' + ep)).json())['subsonic-response'], ep);
+  await p.goto('http://tr-test:8000/'); await p.waitForSelector('.recents-grid');
+  for (const x of ((await nd('getPlaylists')).playlists.playlist || []).filter(x => x.name === 'ZZ Dup Test')) await nd('deletePlaylist?id=' + x.id);
+  await nd('createPlaylist?name=ZZ%20Dup%20Test');
+  const count = async () => ((await nd('getPlaylists')).playlists.playlist.find(x => x.name === 'ZZ Dup Test') || {}).songCount;
+  await p.locator('.tabbtn[data-tab=search]').click(); await p.fill('#searchInput', 'piano man');
+  await p.waitForSelector('#searchBody .row[data-sid]');
+  const addViaMenu = async () => {
+    await p.locator('#searchBody .row[data-sid]').first().locator('button[aria-label=More]').click();
+    await p.locator('.sheet .item', { hasText: 'Add to playlist' }).click(); await p.waitForSelector('.sheet .item:has-text("ZZ Dup Test")');
+    await p.locator('.sheet .item', { hasText: 'ZZ Dup Test' }).click(); await sleep(1200);
+  };
+  await addViaMenu();
+  ok(await p.locator('.dialog').count() === 0 && await count() === 1, 'first add: no prompt, song added');
+  await addViaMenu();
+  ok(await p.locator('.dialog').count() === 1, 'second add of the same song: prompt appears');
+  console.log('   text:', (await p.locator('.dialog').innerText()).replace(/\n+/g, ' | '));
+  await p.screenshot({ path: '/out/50-duplicate.png' });
+  await p.locator('.dialog .pillbtn', { hasText: /^No$/ }).click(); await sleep(1000);
+  ok(await count() === 1, 'answering No leaves it at 1');
+  await addViaMenu(); await p.locator('.dialog .pillbtn', { hasText: 'Yes, add again' }).click(); await sleep(1200);
+  ok(await count() === 2, 'answering Yes adds the duplicate (2)');
+  // "adding to <playlist>" search mode (+ button)
+  const pl = (await nd('getPlaylists')).playlists.playlist.find(x => x.name === 'ZZ Dup Test');
+  await p.evaluate(id => 0, pl.id);
+  await p.locator('.tabbtn[data-tab=library]').click(); await p.locator('#tab-library .chip', { hasText: 'Playlists' }).click();
+  await p.locator('#tab-library .row', { hasText: 'ZZ Dup Test' }).first().click();
+  await p.waitForSelector('#tab-library .page:last-child .actions');
+  await p.locator('#tab-library .page:last-child button[aria-label="Add songs"]').click();
+  await p.waitForSelector('#addBanner .banner'); await p.fill('#searchInput', ''); await p.fill('#searchInput', 'piano man');
+  await p.waitForSelector('#searchBody .row[data-sid] button[aria-label=Add]');
+  await p.locator('#searchBody .row[data-sid]').first().locator('button[aria-label=Add]').click(); await sleep(1000);
+  ok(await p.locator('.dialog').count() === 1, 'the "+" in add-songs mode also asks about duplicates');
+  await p.locator('.dialog .pillbtn', { hasText: /^No$/ }).click(); await sleep(800);
+  ok(await count() === 2, 'No again: still 2');
+  await nd('deletePlaylist?id=' + pl.id);
+  await b.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASSED'); process.exit(failures ? 1 : 0);
+})().catch(e => { console.error('CRASH', e.message.split('\n').slice(0, 4).join('\n')); process.exit(2); });

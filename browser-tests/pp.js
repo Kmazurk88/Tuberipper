@@ -1,0 +1,33 @@
+const { chromium } = require('playwright');
+const BASE = process.argv[2]; let fails = 0;
+const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
+(async () => {
+  const b = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const ctx = await b.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+  const p = await ctx.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message));
+  await require('./bm.js')(p);
+  await p.addInitScript(() => { localStorage.setItem('tr.debug', '1'); const A = window.Audio; window.__as = []; window.Audio = class extends A { constructor() { super(); window.__as.push(this); } }; window.__act = () => window.__as.find(a => a.src && !a.paused) || window.__as.find(a => a.src) || window.__as[0]; });
+  await p.goto(BASE); await p.waitForSelector('.recents-grid');
+  await p.locator('text=Your Library').first().click(); await p.waitForTimeout(500);
+  await p.locator('.row', { hasText: 'Shower' }).first().click();
+  await p.waitForSelector('.page .row[data-sid]');
+  const play = p.locator('.page .playbtn'), shuf = p.locator('.page .shuf');
+  ok(await shuf.count() === 1 && !(await shuf.evaluate(e=>e.classList.contains('on'))), 'shuffle starts off');
+  await shuf.click(); await p.waitForTimeout(2500);
+  ok(await shuf.evaluate(e=>e.classList.contains('on')), 'shuffle lit after press');
+  const col = await shuf.evaluate(e => getComputedStyle(e).color); console.log('shuffle colour', col);
+  const shufOrder = await p.evaluate(() => P.list.map(s => s.id).join());
+  const ps = { paused: await p.evaluate(() => (window.__act ? window.__act().paused : true)), loaded: await p.evaluate(() => P.loaded) };
+  console.log('player', JSON.stringify(ps));
+  ok(await play.getAttribute('aria-label') === (ps.paused ? 'Play' : 'Pause'), 'play button label follows the player: ' + await play.getAttribute('aria-label'));
+  await shuf.click(); await p.waitForTimeout(300);
+  ok(!await shuf.evaluate(e=>e.classList.contains('on')), 'shuffle off after second press');
+  const orderBack = await p.evaluate(() => P.list.map(s => s.id).join());
+  ok(orderBack !== shufOrder && await p.evaluate(() => P.list[P.index].id === cur().id), 'queue back in playlist order, same song kept');
+  await p.locator('.page .row[data-sid]').first().click(); await p.waitForTimeout(2000);
+  const a = await p.evaluate(() => (window.__as||[]).some(x=>!x.paused));
+  if (a) { ok((await play.getAttribute('aria-label')) === 'Pause', 'play shows pause while this page plays'); await play.click(); await p.waitForTimeout(500); ok((await play.getAttribute('aria-label')) === 'Play', 'press pauses -> shows play'); }
+  else console.log('SKIP audio did not start (codec)');
+  ok(errs.length === 0, 'no page errors ' + errs.join(';'));
+  await b.close(); process.exit(fails ? 1 : 0);
+})();

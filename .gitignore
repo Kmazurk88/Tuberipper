@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.mp3
+*.m4a
+*.wav
+*.log
+.env
+node_modules/
+*.png
+*.out

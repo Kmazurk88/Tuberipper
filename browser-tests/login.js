@@ -1,0 +1,35 @@
+const { chromium } = require('playwright');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let failures = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
+(async () => {
+  const b = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const ctx = await b.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+  const p = await ctx.newPage(); const errs = [];
+  p.on('pageerror', e => errs.push(e.message));
+  await p.goto('http://tr-test:8001/');
+  await p.waitForSelector('#f');
+  ok(p.url().includes('/login?next='), 'opening the app signed-out lands on the login page');
+  await p.screenshot({ path: '/out/40-login.png' });
+  await p.fill('#u', process.env.USR); await p.fill('#p', 'definitely wrong password');
+  await p.click('#go'); await p.waitForFunction(() => document.getElementById('err').textContent.length > 0);
+  ok((await p.locator('#err').innerText()).includes('Wrong username or password'), 'wrong password shows a message');
+  await p.screenshot({ path: '/out/41-login-error.png' });
+  await p.fill('#p', process.env.PW); await p.click('#go');
+  await p.waitForSelector('.recents-grid', { timeout: 20000 });
+  ok(true, 'correct login opens the app'); await sleep(1500);
+  await p.locator('.avatar').first().click(); await p.waitForSelector('.sheet'); await sleep(300);
+  const menu = await p.locator('.sheet').innerText();
+  ok(menu.includes('Signed in as ' + process.env.USR) && menu.includes('Sign out') && !menu.includes('Classic'), 'menu: shows user + Sign out, hides the classic view');
+  await p.screenshot({ path: '/out/42-menu.png' });
+  await p.locator('.sheet .item', { hasText: 'Sign out' }).click();
+  await p.waitForSelector('#f'); ok(p.url().includes('/login'), 'sign out returns to the login page');
+  await p.goto('http://tr-test:8001/'); await p.waitForSelector('#f'); ok(true, 'and the session is really gone');
+  // expired/invalid session while the app is open -> bounced to login
+  await p.fill('#u', process.env.USR); await p.fill('#p', process.env.PW); await p.click('#go'); await p.waitForSelector('.recents-grid');
+  await ctx.clearCookies();
+  await p.locator('.tabbtn[data-tab=search]').click();
+  await p.fill('#searchInput', 'billy joel');
+  await p.waitForSelector('#f', { timeout: 15000 }); ok(true, 'a dropped session sends you to the login page instead of showing errors');
+  console.log('errors:', errs); console.log(failures ? failures + ' FAILED' : 'ALL PASSED');
+  await b.close(); process.exit(failures ? 1 : 0);
+})().catch(e => { console.error('CRASH', e.message.split('\n').slice(0, 5).join('\n')); process.exit(2); });

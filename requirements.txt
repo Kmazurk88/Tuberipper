@@ -1,0 +1,8 @@
+# [default] pulls yt-dlp-ejs, which (with Deno, installed in the Dockerfile)
+# solves YouTube's JavaScript challenges -- required since Nov 2025.
+yt-dlp[default]>=2025.11.12
+ytmusicapi>=1.10
+mutagen>=1.47
+requests>=2.31
+fastapi>=0.110
+uvicorn[standard]>=0.29

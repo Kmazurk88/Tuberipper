@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="tuberipper">
+<meta name="theme-color" content="#121212">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32.png">
+<link rel="icon" type="image/svg+xml" href="static/icon.svg">
+<link rel="manifest" href="static/app.webmanifest">
+<title>tuberipper</title>
+<link rel="stylesheet" href="static/app.css?v=AUTO">
+</head>
+<body>
+<div id="app">
+  <main id="views">
+    <section class="tab" id="tab-home"></section>
+    <section class="tab" id="tab-search"></section>
+    <section class="tab" id="tab-library"></section>
+  </main>
+
+  <div id="toasts"></div>
+
+  <div id="mini" class="hidden">
+    <div class="mini-body" id="miniBody">
+      <div class="cover sm" id="miniCover"></div>
+      <div class="mini-text"><div class="mini-title" id="miniTitle"></div><div class="mini-sub" id="miniSub"></div></div>
+      <button class="icon-btn heart" id="miniHeart" aria-label="Like"></button>
+      <button class="icon-btn" id="miniPlay" aria-label="Play or pause"></button>
+    </div>
+    <div class="mini-progress"><div id="miniBar"></div></div>
+  </div>
+
+  <nav id="tabbar">
+    <button class="tabbtn" data-tab="home"><span class="ic"></span><span>Home</span></button>
+    <button class="tabbtn" data-tab="search"><span class="ic"></span><span>Search</span></button>
+    <button class="tabbtn" data-tab="library"><span class="ic"></span><span>Your Library</span></button>
+    <button class="tabbtn" data-tab="create"><span class="ic"></span><span>Create</span></button>
+  </nav>
+
+  <div id="layers"></div>
+</div>
+<script src="static/app.js?v=AUTO"></script>
+</body>
+</html>

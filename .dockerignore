@@ -1,0 +1,10 @@
+.venv
+__pycache__
+*.pyc
+downloads
+*.log
+.git
+tests
+browser-tests
+deploy.sh
+download-check.sh

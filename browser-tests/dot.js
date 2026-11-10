@@ -1,0 +1,33 @@
+const { chromium } = require('playwright');
+const BASE = process.argv[2]; let fails = 0;
+const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
+(async () => {
+  const b = await chromium.launch();
+  const ctx = await b.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+  const p = await ctx.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message));
+  await require('./bm.js')(p);
+  await p.addInitScript(() => localStorage.setItem('tr.debug', '1'));
+  await p.goto(BASE); await p.waitForSelector('.recents-grid');
+  await p.waitForFunction(() => S.inPl.size > 0, null, { timeout: 30000 });
+  const n = await p.evaluate(() => S.inPl.size);
+  ok(n > 50, `membership index built (${n} songs in playlists)`);
+  // open a playlist page: every row there is in a playlist, so all dots must show
+  await p.evaluate(async () => { const l = await nd('getPlaylists'); window.__pl = l.playlists.playlist.find(x => x.name === 'Shower'); });
+  await p.locator('text=Your Library').first().click().catch(() => {});
+  await p.waitForTimeout(500);
+  await p.locator('.row', { hasText: 'Shower' }).first().click();
+  await p.waitForSelector('.page .row[data-sid]');
+  await p.waitForTimeout(800);
+  const rows = await p.locator('.page .row[data-sid]').count(), dots = await p.locator('.page .row[data-sid] .pl-dot:not([hidden])').count();
+  ok(rows > 10 && dots === rows, `Shower playlist: ${dots}/${rows} rows show the dot`);
+  await p.screenshot({ path: '/t/dot-playlist.png' });
+  await p.locator('.page .pl-dot:not([hidden])').first().click();
+  await p.waitForSelector('.pick h2');
+  ok((await p.locator('.pick h2').innerText()) === 'Saved in', 'tapping the dot opens "Saved in"');
+  await p.waitForSelector('.pick .tog.on');
+  ok(await p.locator('.pick .tog.on').count() >= 1, 'picker shows ticked playlists');
+  await p.screenshot({ path: '/t/dot-picker.png' });
+  await p.locator('.pick-bar button', { hasText: 'Cancel' }).click();
+  ok(errs.length === 0, 'no page errors ' + errs.join(';'));
+  await b.close(); process.exit(fails ? 1 : 0);
+})();
