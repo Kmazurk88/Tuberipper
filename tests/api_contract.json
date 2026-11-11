@@ -1,0 +1,382 @@
+{
+ "DELETE /api/library/{artist}": {
+  "required": [],
+  "body": false
+ },
+ "DELETE /api/library/{artist}/{album}": {
+  "required": [],
+  "body": false
+ },
+ "DELETE /api/library/{artist}/{album}/{track}": {
+  "required": [],
+  "body": false
+ },
+ "GET /": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/app/import/{import_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/app/state": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/auth/me": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/busy": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/debug/search": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/discover/album": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/discover/artist": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/discover/song": {
+  "required": [
+   "artist",
+   "title"
+  ],
+  "body": false
+ },
+ "GET /api/health": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/instance": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/jobs/active": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/jobs/{job_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/jobs/{job_id}/tracks/{index}/sources": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/libhealth/scan/{job_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/libhealth/trash": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/albums": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/cover": {
+  "required": [
+   "album",
+   "artist"
+  ],
+  "body": false
+ },
+ "GET /api/library/file": {
+  "required": [
+   "path"
+  ],
+  "body": false
+ },
+ "GET /api/library/find": {
+  "required": [
+   "q"
+  ],
+  "body": false
+ },
+ "GET /api/library/playlist": {
+  "required": [
+   "id"
+  ],
+  "body": false
+ },
+ "GET /api/library/playlists": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/recent": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/scan/{job_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/search": {
+  "required": [
+   "q"
+  ],
+  "body": false
+ },
+ "GET /api/library/songs": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/{artist}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/library/{artist}/{album}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/loudness": {
+  "required": [
+   "ids"
+  ],
+  "body": false
+ },
+ "GET /api/meta": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/mixes": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/navidrome/playlists": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/nd/cover/{cover_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/nd/rest/{endpoint}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/nd/stream/{song_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/podcast/about": {
+  "required": [
+   "album"
+  ],
+  "body": false
+ },
+ "GET /api/podcast/abs-progress": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/podcast/capabilities": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/podcast/dates": {
+  "required": [
+   "album"
+  ],
+  "body": false
+ },
+ "GET /api/podcast/silences": {
+  "required": [
+   "id"
+  ],
+  "body": false
+ },
+ "GET /api/preview-status/{video_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/preview/{video_id}": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/radio": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/recommend/home": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/search": {
+  "required": [
+   "q"
+  ],
+  "body": false
+ },
+ "GET /api/search/youtube": {
+  "required": [
+   "q"
+  ],
+  "body": false
+ },
+ "GET /api/stats": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/suggest": {
+  "required": [
+   "q"
+  ],
+  "body": false
+ },
+ "GET /app.apk": {
+  "required": [],
+  "body": false
+ },
+ "GET /apple-touch-icon-precomposed.png": {
+  "required": [],
+  "body": false
+ },
+ "GET /apple-touch-icon.png": {
+  "required": [],
+  "body": false
+ },
+ "GET /classic": {
+  "required": [],
+  "body": false
+ },
+ "GET /favicon.ico": {
+  "required": [],
+  "body": false
+ },
+ "GET /login": {
+  "required": [],
+  "body": false
+ },
+ "GET /setup": {
+  "required": [],
+  "body": false
+ },
+ "PATCH /api/jobs/{job_id}/tracks/{index}": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/app/import": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/auth/login": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/auth/logout": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/jobs": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/catalog": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/{job_id}/apply-default-artist": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/{job_id}/confirm-match": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/{job_id}/pick-album": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/{job_id}/retry-failed": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/jobs/{job_id}/start": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/jobs/{job_id}/tracks/{index}/lookup": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/jobs/{job_id}/tracks/{index}/source": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/libhealth/fix": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/libhealth/restore": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/libhealth/scan": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/libhealth/trash/empty": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/library/delete": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/library/fix-albums": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/library/merge": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/library/scan": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/library/scan/{job_id}/repair": {
+  "required": [],
+  "body": true
+ },
+ "POST /api/nd/rest/{endpoint}": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/podcast/abs-progress": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/podcast/delete": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/podcast/delete-show": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/setup/secret": {
+  "required": [],
+  "body": false
+ },
+ "POST /api/stats/play": {
+  "required": [],
+  "body": false
+ },
+ "PUT /api/app/state": {
+  "required": [],
+  "body": false
+ }
+}

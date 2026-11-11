@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import catalog, deezer, downloader, library_index, library_merge, library_scan, metadata, musicbrainz, navidrome, notify, playlists, sourcing, tagger, lyrics, title_parser, config
-from . import abs as audiobookshelf, activity, auth, compress, discover, audio_analysis, library_delete, libhealth, mixes, player_api, podcasts, radio, recommend, secrets_setup, stats
+from . import abs as audiobookshelf, activity, auth, compress, discover, audio_analysis, library_delete, libhealth, meta, mixes, player_api, podcasts, radio, recommend, secrets_setup, stats
 from .jobs import store, build_track
 from . import textmatch
 from .textmatch import base_title, text_score
@@ -37,10 +37,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
+    expose_headers=["X-TR-Shell"],
 )
 # Added after CORS so it wraps it: text answers are gzipped, audio/covers/Range pass through (compress.py).
 app.add_middleware(compress.Gzip)
 app.add_middleware(activity.CountAudio)
+app.add_middleware(meta.ShellHeader)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -1871,16 +1873,11 @@ def favicon():
     return FileResponse(os.path.join(STATIC_DIR, "favicon-32.png"), media_type="image/png")
 
 
-def _asset_version() -> str:
-    """Changes whenever the app's files change, so a phone can never mix a new script with an old stylesheet."""
-    return str(int(max(os.path.getmtime(os.path.join(STATIC_DIR, f)) for f in ("app.html", "app.js", "app.css"))))
-
-
 @router.get("/")
 def index():
     # The player app. The original TubeRipper screens stay at /classic.
     with open(os.path.join(STATIC_DIR, "app.html"), encoding="utf-8") as f:
-        page = f.read().replace("?v=AUTO", "?v=" + _asset_version())
+        page = f.read().replace("?v=AUTO", "?v=" + meta.asset_version())
     return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
 
@@ -1913,6 +1910,8 @@ app.include_router(secrets_setup.router)
 app.include_router(secrets_setup.router, prefix="/tuberipper")
 app.include_router(audiobookshelf.router)
 app.include_router(audiobookshelf.router, prefix="/tuberipper")
+app.include_router(meta.router)
+app.include_router(meta.router, prefix="/tuberipper")
 app.include_router(player_api.router)
 app.include_router(player_api.router, prefix="/tuberipper")
 app.include_router(router)

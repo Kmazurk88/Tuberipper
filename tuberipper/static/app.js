@@ -14,8 +14,29 @@ window.fetch = async (...args) => {
   if (r.status === 401 && String(args[0]).includes('/api/') && !String(args[0]).includes('/api/auth/')) {
     location.href = api('/login') + '?next=' + encodeURIComponent(location.pathname);
   }
+  noteShell(r.headers.get('x-tr-shell'));
   return r;
 };
+
+// The server names its current app version on every answer (X-TR-Shell). When it differs from the one this page
+// was loaded with, a newer app was deployed: reload by itself the next time the app is in the background with
+// nothing playing, so nobody has to press "Reload app" and no song is cut off. Once per version (no loops).
+const SHELL = (() => { try { return new URL(document.currentScript.src).searchParams.get('v') || ''; } catch (e) { return ''; } })();
+let newShell = '';
+function noteShell(v) {
+  if (!v || !SHELL || v === SHELL || v === newShell) return;
+  try { if (sessionStorage.getItem('tr.reloadedFor') === v) return; } catch (e) { /* ignore */ }
+  newShell = v;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!newShell || document.visibilityState !== 'hidden') return;
+  setTimeout(() => {
+    if (!newShell || document.visibilityState !== 'hidden' || !audio.paused) return;
+    try { sessionStorage.setItem('tr.reloadedFor', newShell); } catch (e) { /* ignore */ }
+    persistSession(true);
+    location.reload();
+  }, 1500);
+});
 const $ = (s, el = document) => el.querySelector(s);
 const arr = x => (x == null ? [] : Array.isArray(x) ? x : [x]);
 const LONG_SECONDS = 600; // anything longer than 10 min (or any podcast episode) remembers where you stopped
