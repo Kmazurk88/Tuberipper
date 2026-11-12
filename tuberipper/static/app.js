@@ -15,8 +15,38 @@ window.fetch = async (...args) => {
     location.href = api('/login') + '?next=' + encodeURIComponent(location.pathname);
   }
   noteShell(r.headers.get('x-tr-shell'));
+  noteRequest(r);
   return r;
 };
+
+// The server names every request (X-Request-Id) and logs errors under that id. Error toasts that follow a server error
+// show it, so "ref 3fa9c1d2e4b7" on the phone leads to one line in `docker logs tuberipper`.
+let lastFail = null;
+function noteRequest(r) {
+  const rid = r.headers.get('x-request-id');
+  if (rid && r.status >= 500) lastFail = { rid, at: Date.now() };
+}
+
+// Unexpected JavaScript errors are sent to the server (each kind once, at most 3 a visit), so they show up there
+// (and in Discord) without anyone having to describe them. Reporting must never cause errors of its own.
+const appInfo = () => { const m = navigator.userAgent.match(/TubeRipperApp\/([\d.]+)/); return { name: m ? m[1] : 'web', code: 0 }; };
+let jsReports = 0;
+const jsSeen = new Set();
+function reportJs(message, source, line, stack) {
+  try {
+    message = String(message || '').slice(0, 500);
+    const key = message + '|' + line;
+    if (jsReports >= 3 || jsSeen.has(key) || !message || /^Script error\.?$/.test(message) || /ResizeObserver/.test(message)) return;
+    jsSeen.add(key); jsReports++;
+    nativeFetch(api('/api/app/diag'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'js', app: appInfo(), js: { message, source: String(source || '').replace(location.origin, ''), line: line || 0,
+        stack: String(stack || '').slice(0, 3000), shell: SHELL, ua: navigator.userAgent.slice(0, 200) } }) }).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+window.addEventListener('error', e => reportJs(e.message, e.filename, e.lineno, e.error && e.error.stack));
+window.addEventListener('unhandledrejection', e => reportJs('Unhandled: ' + ((e.reason && e.reason.message) || e.reason), '', 0, e.reason && e.reason.stack));
+// The Android app answers "Send diagnostics" through this.
+window.TRNative_diag = (ok, msg) => toast(msg, ok ? 'ok' : 'bad');
 
 // The server names its current app version on every answer (X-TR-Shell). When it differs from the one this page
 // was loaded with, a newer app was deployed: reload by itself the next time the app is in the background with
@@ -442,6 +472,7 @@ const backBar = (title, ...extra) => h('div', { class: 'backbar' },
 // UI primitives
 // =====================================================================
 function toast(text, cls = '', ttl = 5000, onclick) {
+  if (cls.includes('bad') && lastFail && Date.now() - lastFail.at < 10000 && typeof text === 'string' && !/\bRef [\w-]{6,}/i.test(text)) text += ` (ref ${lastFail.rid})`;
   const el = h('div', { class: 'toast' + (cls ? ' ' + cls : ''), onclick: () => { el.remove(); if (onclick) onclick(); } }, text);
   $('#toasts').append(el);
   if (ttl) setTimeout(() => el.remove(), ttl);
@@ -2412,6 +2443,7 @@ function openMenu() {
       { icon: 'health', label: 'Library health', run: openHealth },
       { icon: 'sliders', label: 'Playback & display', run: settingsSheet },
       { icon: 'down', label: 'Reload app', run: () => location.reload() },
+      window.TRNative && TRNative.sendDiagnostics && { icon: 'list', label: 'Send diagnostics', run: () => { toast('Sending…', '', 1500); TRNative.sendDiagnostics(''); } },
       S.me.auth && { icon: 'x', label: 'Sign out', run: async () => { await nativeFetch(api('/api/auth/logout'), { method: 'POST' }); location.href = api('/login'); } },
     ] });
 }
@@ -3531,6 +3563,6 @@ async function boot() {
 }
 
 // Browser tests only (localStorage 'tr.debug'): expose the pieces they drive
-if (localStorage.getItem('tr.debug')) Object.assign(window, { P, S, FX, cur, playQueue, onlineSong, nd, arr, api, lsSet, closeAllLayers });
+if (localStorage.getItem('tr.debug')) Object.assign(window, { P, S, FX, cur, playQueue, onlineSong, nd, arr, api, lsSet, toast, closeAllLayers });
 boot();
 })();

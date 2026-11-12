@@ -15,6 +15,10 @@
   "required": [],
   "body": false
  },
+ "GET /api/app/diag": {
+  "required": [],
+  "body": false
+ },
  "GET /api/app/import/{import_id}": {
   "required": [],
   "body": false
@@ -51,6 +55,10 @@
   "body": false
  },
  "GET /api/health": {
+  "required": [],
+  "body": false
+ },
+ "GET /api/health/deps": {
   "required": [],
   "body": false
  },
@@ -266,6 +274,10 @@
  "PATCH /api/jobs/{job_id}/tracks/{index}": {
   "required": [],
   "body": true
+ },
+ "POST /api/app/diag": {
+  "required": [],
+  "body": false
  },
  "POST /api/app/import": {
   "required": [],

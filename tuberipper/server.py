@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import catalog, deezer, downloader, library_index, library_merge, library_scan, metadata, musicbrainz, navidrome, notify, playlists, sourcing, tagger, lyrics, title_parser, config
-from . import abs as audiobookshelf, activity, auth, compress, durable, discover, audio_analysis, library_delete, libhealth, meta, mixes, player_api, podcasts, radio, recommend, secrets_setup, spotify_import, stats
+from . import abs as audiobookshelf, activity, auth, compress, diag, durable, discover, health as health_deps, audio_analysis, library_delete, libhealth, meta, mixes, obs, player_api, podcasts, radio, recommend, secrets_setup, spotify_import, stats
 from .jobs import store, build_track
 from . import textmatch
 from .textmatch import base_title, text_score
@@ -33,7 +33,10 @@ async def _lifespan(_app):
     _on_stop()
 
 
+obs.setup()
 app = FastAPI(title="tuberipper", lifespan=_lifespan)
+# Innermost, so an unexpected error is answered as JSON with its request id and the CORS headers below still apply.
+app.add_middleware(obs.RequestLog)
 
 # No login: this is a personal tool reachable only on the LAN and the
 # tailnet (VPN), never exposed publicly. Permissive CORS because the phone UI
@@ -45,7 +48,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
-    expose_headers=["X-TR-Shell"],
+    expose_headers=["X-TR-Shell", "X-Request-Id"],
 )
 # Added after CORS so it wraps it: text answers are gzipped, audio/covers/Range pass through (compress.py).
 app.add_middleware(compress.Gzip)
@@ -2023,6 +2026,10 @@ app.include_router(audiobookshelf.router)
 app.include_router(audiobookshelf.router, prefix="/tuberipper")
 app.include_router(meta.router)
 app.include_router(meta.router, prefix="/tuberipper")
+app.include_router(health_deps.router)
+app.include_router(health_deps.router, prefix="/tuberipper")
+app.include_router(diag.router)
+app.include_router(diag.router, prefix="/tuberipper")
 app.include_router(player_api.router)
 app.include_router(player_api.router, prefix="/tuberipper")
 app.include_router(router)

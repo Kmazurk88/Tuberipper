@@ -48,8 +48,8 @@ docker build $flags -t tuberipper:candidate "$BUILD" >/dev/null || fail "The ima
 # 2. it must pass the tests, and must not be worse at reaching YouTube than what is live
 docker run --rm --user 99:100 -e HOME=/tmp -e PIP_TARGET=/tmp/pp -e PYTHONPATH=/tmp/pp \
   -v $BUILD/tests:/app/tests:ro -w /app tuberipper:candidate \
-  sh -c "pip install -q pytest httpx 2>/dev/null; python -m pytest -q -p no:cacheprovider tests" >/tmp/tuberipper-deploy-tests.log 2>&1 \
-  || fail "Tests failed on the new image (/tmp/tuberipper-deploy-tests.log)."
+  sh -c "pip install -q pytest httpx ruff 2>/dev/null; python -m ruff check --no-cache --select E9,F63,F7,F82,F811 tuberipper tests && python -m pytest -q -p no:cacheprovider tests" >/tmp/tuberipper-deploy-tests.log 2>&1 \
+  || fail "Lint or tests failed on the new image (/tmp/tuberipper-deploy-tests.log)."   # ruff: real mistakes only (syntax errors, undefined names), not style
 if [ $REFRESH = 1 ]; then
   probe='yt-dlp -q --no-warnings --simulate -f bestaudio --print id "ytsearch1:rick astley never gonna give you up"'
   if ! docker run --rm tuberipper:candidate sh -c "$probe" >/dev/null 2>&1 \
