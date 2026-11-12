@@ -346,6 +346,9 @@ input[type=search]::-webkit-search-cancel-button { display: none; }
 .hero-resume { position: relative; cursor: pointer; display: flex; align-items: center; gap: 14px; width: calc(100% - 32px); margin: 6px 16px 10px; padding: 12px 36px 12px 12px; border-radius: 12px; text-align: left; background: linear-gradient(135deg, var(--resume1), var(--surface)); }
 .hr-x { position: absolute; top: 0; right: 0; width: 36px; height: 40px; display: grid; place-items: center; color: var(--dim); }
 .hr-x svg { width: 16px; height: 16px; }
+.cont-card { position: relative; flex: none; }
+.cont-x { position: absolute; top: 4px; right: 4px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.6); color: #fff; }
+.cont-x svg { width: 14px; height: 14px; }
 .hero-resume .cover { flex: none; width: 76px; height: 76px; border-radius: 8px; }
 .hr-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .hr-txt small { color: var(--accent); font-weight: 700; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }

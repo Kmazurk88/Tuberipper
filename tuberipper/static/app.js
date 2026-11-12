@@ -2273,10 +2273,26 @@ function albumCard(a) {
 function continueCard(b) {
   const s = b.entry, done = b.position / 1000;
   const left = s.duration ? Math.max(1, Math.round((s.duration - done) / 60)) : null;
-  return h('button', { class: 'card', onclick: () => resumeEntry(s, done) },
-    cover(s.coverArt, '', 300), h('div', { class: 'nm' }, s.title),
-    h('div', { class: 'sb' }, [s.artist, left ? `${left} min left` : null].filter(Boolean).join(' • ')),
-    s.duration ? h('div', { class: 'prog' }, h('div', { style: `width:${Math.min(100, Math.round((done / s.duration) * 100))}%` })) : null);
+  // The X clears the saved position (everywhere, like "Mark as not started"), so the card leaves Continue listening. Undo puts it back.
+  // Home re-reads the positions from Navidrome, so it redraws only after Navidrome has the change (else the card would flash back).
+  const redraw = () => { lastHome = 0; renderHome(); };
+  const remove = e => {
+    e.stopPropagation(); haptic();
+    const sn = snapOf([s]);
+    markNotStarted(s); wrap.remove();
+    nd('deleteBookmark', { id: s.id }).catch(() => {}).then(redraw);
+    toastUndo('Removed from Continue listening', () => {
+      restoreSnap(sn);
+      (sn[0].b ? nd('createBookmark', { id: s.id, position: sn[0].b.position }).catch(() => {}) : Promise.resolve()).then(redraw);
+    });
+  };
+  const wrap = h('div', { class: 'cont-card' },
+    h('button', { class: 'card', onclick: () => resumeEntry(s, done) },
+      cover(s.coverArt, '', 300), h('div', { class: 'nm' }, s.title),
+      h('div', { class: 'sb' }, [s.artist, left ? `${left} min left` : null].filter(Boolean).join(' • ')),
+      s.duration ? h('div', { class: 'prog' }, h('div', { style: `width:${Math.min(100, Math.round((done / s.duration) * 100))}%` })) : null),
+    h('button', { class: 'cont-x', 'aria-label': 'Remove from Continue listening', onclick: remove, html: I.x }));
+  return wrap;
 }
 // The most recent thing you were listening to, as one big tap-to-resume card. The X hides it until you
 // listen to something else (the saved position itself is kept: it stays under "Continue listening").
