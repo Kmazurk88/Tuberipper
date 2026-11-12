@@ -597,7 +597,168 @@ function syncHearts() { document.querySelectorAll('.heart[data-sid]').forEach(pa
 // Player
 // =====================================================================
 const bus = new EventTarget();
-const AUDS = [new Audio(), new Audio()];
+
+// ----- The native player (Android app, "New player (beta)" in Playback & display) -----
+// With it on, the app itself plays the audio (ExoPlayer in a media service) instead of this page: Android's audio rules
+// apply (calls, other apps, headphones unplugged) and the next songs play on by themselves even with the screen off and the
+// page asleep. This page keeps the queue and everything else, and the rest of the code below uses `audio` as before:
+// NativeAudio is a small stand-in for the <audio> element that sends its commands to the app and turns the app's
+// messages (window.TRPlayer_event) back into the element's events. See Engine.java for the protocol.
+const NATIVE_ENGINE = !!(window.TRNative && TRNative.playerVersion && TRNative.playerVersion() >= 2 && lsGet('tr.native', false));
+const nativeCmd = c => { try { TRNative.player(JSON.stringify(c)); } catch (e) { /* the app is closing */ } };
+const nativeEligible = song => !!song && !song.online && !isLong(song);
+const nativeItem = (song, gain, speed) => ({ id: song.id, url: absUrl(srcFor(song)), title: song.title || '', artist: song.artist || '', album: song.album || '',
+  art: song.coverArt ? absUrl(coverUrl(song.coverArt, 512)) : '', dur: Math.round((song.duration || 0) * 1000), gain, speed });
+// The songs after the current one that the app may play by itself: consecutive, music from the library (podcasts and
+// streamed songs need this page: bookmarks, speed, resolving the stream).
+function nativeUpcoming() {
+  const out = [];
+  if (!nativeEligible(cur())) return out;
+  for (let k = P.index + 1; k < P.list.length && out.length < 5; k++) {
+    if (!nativeEligible(P.list[k])) break;
+    out.push(nativeItem(P.list[k], levelVol(P.list[k]), 1));
+  }
+  return out;
+}
+class NativeAudio extends EventTarget {
+  constructor() {
+    super();
+    this._src = ''; this._pendingLoad = false; this._loaded = false; this._paused = true; this._ended = false; this._playing = false;
+    this._pos = 0; this._posAt = 0; this._dur = NaN; this._rate = 1; this._vol = 1; this._ready = false;
+    this.startAt = 0; this.currentId = ''; this.preload = ''; this.onTransition = null;
+  }
+  _emit(type) { this.dispatchEvent(new Event(type)); }
+  get src() { return this._src; }
+  set src(v) {
+    this._src = v; this._pendingLoad = true; this._loaded = false; this._ended = false; this._playing = false; this._ready = false;
+    this._pos = this.startAt || 0; this._posAt = performance.now(); this._dur = NaN;
+  }
+  removeAttribute() { /* only the crossfade code does this */ }
+  load() { /* the app loads when play() is called */ }
+  get paused() { return this._paused; }
+  get ended() { return this._ended; }
+  get readyState() { return this._loaded && this._ready ? 4 : 0; }
+  get error() { return null; }
+  get duration() { return this._dur; }
+  get currentTime() {
+    if (!this._loaded || !this._playing) return this._pos;
+    const t = this._pos + ((performance.now() - this._posAt) / 1000) * this._rate;
+    return isFinite(this._dur) ? Math.min(t, this._dur) : t;
+  }
+  set currentTime(t) {
+    t = Math.max(0, +t || 0);
+    if (Math.abs(t - this.currentTime) < 0.5) return;   // the same place: nothing to do (loadTrack sets it again after loading)
+    this._pos = t; this._posAt = performance.now();
+    if (this._loaded && !this._pendingLoad) nativeCmd({ c: 'seek', pos: Math.round(t * 1000) });
+    else this.startAt = t;
+  }
+  get volume() { return this._vol; }
+  set volume(v) {
+    v = Math.max(0, Math.min(1, +v || 0));
+    if (v === this._vol) return;
+    this._vol = v;
+    if (this._loaded && !this._pendingLoad) nativeCmd({ c: 'gain', v });
+  }
+  get playbackRate() { return this._rate; }
+  set playbackRate(r) {
+    r = +r || 1;
+    if (r === this._rate) return;
+    this._rate = r;
+    if (this._loaded && !this._pendingLoad) nativeCmd({ c: 'speed', v: r });
+  }
+  get defaultPlaybackRate() { return this._rate; }
+  set defaultPlaybackRate(r) { /* same as playbackRate here */ }
+  get preservesPitch() { return true; }
+  set preservesPitch(v) { /* the app always keeps the pitch */ }
+  play() {
+    const s = cur();
+    if (!s) return Promise.reject(new Error('nothing to play'));
+    if (this._pendingLoad || this._ended || !this._loaded) return this._load(s, true);
+    this._setWants(true);
+    nativeCmd({ c: 'play' });
+    return Promise.resolve();
+  }
+  pause() {
+    if (!this._loaded || this._pendingLoad) { this._paused = true; return; }
+    this._setWants(false);
+    nativeCmd({ c: 'pause' });
+  }
+  _setWants(on) {
+    const was = !this._paused;
+    this._paused = !on;
+    if (on && !was) this._emit('play'); else if (!on && was) this._emit('pause');
+  }
+  // Hand the current song (and the ones after it) to the app.
+  _load(song, play) {
+    const restart = this._ended;
+    const pos = restart ? 0 : (this.startAt > 1 ? this.startAt : 0);
+    if (!this._src) this._src = srcFor(song);
+    this._pendingLoad = false; this._loaded = true; this._ended = false; this._ready = false; this._playing = false;
+    this.currentId = song.id; this._pos = pos; this._posAt = performance.now(); this._dur = NaN; this.startAt = 0;
+    const wasPlaying = !this._paused;
+    this._paused = !play;
+    if (play && !wasPlaying) this._emit('play'); else if (!play && wasPlaying) this._emit('pause');
+    nativeCmd({ c: 'load', item: nativeItem(song, this._vol, this._rate), upcoming: nativeUpcoming(), pos: Math.round(pos * 1000), play });
+    return Promise.resolve();
+  }
+  // The page was (re)loaded while the app was playing: pick up where it is instead of starting over.
+  adopt(st) {
+    this._loaded = true; this._pendingLoad = false; this._ended = false; this.currentId = st.id;
+    this._sync(st);
+    this._paused = !st.wantsPlay;
+    this._ready = st.state === 'ready';
+  }
+  _sync(m) {
+    this._pos = (m.pos || 0) / 1000; this._posAt = performance.now();
+    if (m.dur > 0) this._dur = m.dur / 1000;
+    if (m.rate) this._rate = m.rate;
+    this._playing = !!m.playing;
+  }
+  // A message from the app (see Engine.java).
+  native(m) {
+    if (m.e === 'cmd') { if (m.cmd === 'next') next(); else if (m.cmd === 'prev') prev(); return; }
+    if (m.e === 'sleepDone') { if (this.onSleepDone) this.onSleepDone(); return; }
+    if (m.e === 'transition') {
+      this.currentId = m.id; this._ended = false; this._ready = true; this._pos = 0; this._posAt = performance.now(); this._dur = NaN;
+      if (this.onTransition) this.onTransition(m);
+      return;
+    }
+    if (m.id && m.id !== this.currentId) return;   // about a song the page has already moved on from
+    if (m.e === 'time') { this._sync(m); this._emit('timeupdate'); return; }
+    if (m.e === 'state') {
+      this._sync(m);
+      if (!this._ready && m.state === 'ready') { this._ready = true; this._emit('durationchange'); this._emit('loadedmetadata'); this._emit('canplay'); }
+      if (m.playing) this._emit('playing');
+      if (!this._ended && m.wantsPlay !== !this._paused && m.state !== 'ended') this._setWants(!!m.wantsPlay);   // paused or resumed from the notification, headset or Android itself
+      return;
+    }
+    if (m.e === 'ended') {
+      if (this._ended) return;
+      this._ended = true; this._playing = false;
+      const was = !this._paused;
+      this._paused = true;
+      if (was) this._emit('pause');
+      this._emit('ended');
+      return;
+    }
+    if (m.e === 'error') { this._playing = false; this._emit('error'); }
+  }
+}
+window.TRPlayer_event = m => { if (nativeAudio) nativeAudio.native(m); };
+const nativeAudio = NATIVE_ENGINE ? new NativeAudio() : null;
+// Keep the app's list of upcoming songs in step with the queue (queue edits, shuffle, levelling arriving).
+let upcomingTimer = 0;
+function syncUpcoming() {
+  if (!NATIVE_ENGINE) return;
+  clearTimeout(upcomingTimer);
+  upcomingTimer = setTimeout(() => {
+    const s = cur();
+    if (!s || !nativeAudio._loaded || nativeAudio._pendingLoad || nativeAudio.currentId !== s.id) return;
+    nativeCmd({ c: 'upcoming', items: nativeUpcoming() });
+  }, 60);
+}
+
+const AUDS = NATIVE_ENGINE ? [nativeAudio, new EventTarget()] : [new Audio(), new Audio()];
 AUDS.forEach(a => { a.preload = 'auto'; });
 let audio = AUDS[0];   // the one that is playing; the other one only ever holds the next song for gapless / crossfade
 const idleAudio = () => (AUDS[0] === audio ? AUDS[1] : AUDS[0]);
@@ -627,8 +788,12 @@ const sleepOn = () => SLEEP.until > Date.now() || SLEEP.endOfTrack;
 function setSleep(mode) {   // minutes, 'end', or 0 = off
   clearTimeout(SLEEP.timer);
   SLEEP.until = 0; SLEEP.endOfTrack = false;
-  if (mode === 'end') SLEEP.endOfTrack = true;
-  else if (mode > 0) { SLEEP.until = Date.now() + mode * 60000; SLEEP.timer = setTimeout(sleepCheck, mode * 60000 + 200); }
+  if (mode === 'end') { SLEEP.endOfTrack = true; if (NATIVE_ENGINE) nativeCmd({ c: 'sleep', mode: 'end' }); }
+  else if (mode > 0) {
+    SLEEP.until = Date.now() + mode * 60000;
+    if (NATIVE_ENGINE) nativeCmd({ c: 'sleep', mode: 'timer', ms: mode * 60000 });   // the app fades out and pauses, even with the page asleep
+    else SLEEP.timer = setTimeout(sleepCheck, mode * 60000 + 200);
+  } else if (NATIVE_ENGINE) nativeCmd({ c: 'sleep', mode: 'off' });
   haptic();
   toast(mode === 'end' ? 'Will stop when this ends' : mode > 0 ? `Sleep timer: ${mode} min` : 'Sleep timer off', 'ok', 2200);
   bus.dispatchEvent(new Event('sleep'));
@@ -655,19 +820,29 @@ function sleepSheet() {
 const compact = s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album, albumId: s.albumId, artistId: s.artistId,
   coverArt: s.coverArt, duration: s.duration, track: s.track, ...(s.online ? { online: true, videoId: s.videoId, pay: s.pay } : {}) });
 function persistSession(withList) {
+  if (withList) syncUpcoming();   // every change of the queue passes through here
   try {
     if (withList) localStorage.setItem('tr.queue', JSON.stringify({ list: P.list.slice(0, 600).map(compact), index: P.index, ctx: P.ctx }));
-    localStorage.setItem('tr.pos', JSON.stringify({ id: cur() && cur().id, pos: audio.currentTime || P.pendingSeek || 0 }));
+    localStorage.setItem('tr.pos', JSON.stringify({ id: cur() && cur().id, index: P.index, pos: audio.currentTime || P.pendingSeek || 0 }));   // the queue itself is saved only when it changes, so the place in it goes here
   } catch (e) { /* storage full or disabled */ }
 }
 function restoreSession() {
   try {
     const q = JSON.parse(localStorage.getItem('tr.queue') || 'null');
     const p = JSON.parse(localStorage.getItem('tr.pos') || 'null');
-    if (!q || !q.list || !q.list.length || q.index < 0) return;
-    P.list = q.list; P.index = Math.min(q.index, q.list.length - 1); P.ctx = q.ctx || null;
+    if (!q || !q.list || !q.list.length) return;
+    // The queue is saved when it changes (before its first song starts), so its own index can be stale: the place in it
+    // that was saved with the playback position wins, found by song id.
+    let at = q.index;
+    if (p && p.id) {
+      const hit = p.index >= 0 && q.list[p.index] && q.list[p.index].id === p.id ? p.index : q.list.findIndex(x => x.id === p.id);
+      if (hit >= 0) at = hit;
+    }
+    if (at < 0) return;
+    P.list = q.list; P.index = Math.min(at, q.list.length - 1); P.ctx = q.ctx || null;
     if (p && p.id === cur().id) P.pendingSeek = p.pos || 0;
     bus.dispatchEvent(new Event('track'));
+    adoptNative();
   } catch (e) { /* ignore */ }
 }
 
@@ -699,7 +874,7 @@ async function ensureLevels(songs) {
     const r = await fetch(api(`/api/loudness?ids=${ids.join(',')}`));
     if (!r.ok) return;
     Object.entries((await r.json()).levels || {}).forEach(([id, l]) => S.lufs.set(id, l));
-    applyVolume();
+    applyVolume(); syncUpcoming();
     if (ids.some(id => !S.lufs.has(id)) && ++levelAsk < 6) setTimeout(() => ensureLevels(songs), 20000);   // not measured yet: ask again shortly
   } catch (e) { /* levelling is optional */ }
 }
@@ -707,7 +882,7 @@ async function ensureLevels(songs) {
 // ----- Gapless / crossfade (off by default; Playback settings). The next song is loaded into the idle element and
 // started just before the current one ends; with a crossfade the two overlap and swap volume. -----
 const xfSec = () => lsGet('tr.xfade', 0);
-const gaplessOn = () => lsGet('tr.gapless', false) || xfSec() > 0;
+const gaplessOn = () => !NATIVE_ENGINE && (lsGet('tr.gapless', false) || xfSec() > 0);   // the new player is always gapless on its own
 const XF = { nextId: null, busy: false, fading: false, failed: null };
 function xfReset() {
   XF.nextId = null; XF.failed = null;
@@ -751,6 +926,46 @@ function startCross(n) {
     } else { old.pause(); old.removeAttribute('src'); }
     XF.busy = false;
   }).catch(() => { XF.failed = s0 && s0.id; XF.busy = false; });   // the phone refused: this song ends normally and the usual path loads the next
+}
+
+// The app moved on to the next song by itself (or its notification's Next button did): do what startCross does for the
+// browser player, without touching the audio.
+function nativeAdvanced(m) {
+  let i = -1;
+  for (let k = P.index + 1; k < P.list.length; k++) if (P.list[k].id === m.id) { i = k; break; }
+  if (i < 0) for (let k = 0; k < P.index; k++) if (P.list[k].id === m.id) { i = k; break; }
+  if (i < 0) return;   // not a song of this queue (it was changed meanwhile): the next load sets things straight
+  const s0 = cur();
+  if (s0) clearBookmark(s0);
+  P.index = i; P.loaded = true; P.starting = false; P.scrobbled = false; P.pendingSeek = 0; P.tok++; P.errors = 0;
+  bus.dispatchEvent(new Event('track')); bus.dispatchEvent(new Event('state'));
+  setMediaSession(); persistSession(false);
+  ensureLevels([P.list[i + 1], P.list[i + 2]]);
+  syncUpcoming();   // top the app's list back up
+}
+// The app's sleep timer ran out (it already faded out and paused).
+function nativeSleepDone() {
+  SLEEP.until = 0;
+  toast('Sleep timer: stopped playback', 'ok', 4000);
+  bus.dispatchEvent(new Event('sleep'));
+}
+if (nativeAudio) { nativeAudio.onTransition = nativeAdvanced; nativeAudio.onSleepDone = nativeSleepDone; }
+// The page was loaded (or reloaded) while the app is playing: carry on from what it is playing now.
+function adoptNative() {
+  if (!NATIVE_ENGINE) return;
+  let st;
+  try { st = JSON.parse(TRNative.playerState()); } catch (e) { return; }
+  if (!st.hasPlayer || !st.id || !cur()) return;
+  if (st.id !== cur().id) {
+    const i = P.list.findIndex(x => x.id === st.id);
+    if (i < 0) return;   // the app is playing something this page doesn't know (its queue was lost): leave it be
+    P.index = i;
+  }
+  nativeAudio.adopt(st);
+  P.loaded = true; P.starting = false; P.pendingSeek = 0;
+  nativeCmd({ c: 'visible', v: document.visibilityState === 'visible' });
+  bus.dispatchEvent(new Event('track')); bus.dispatchEvent(new Event('state'));
+  setMediaSession(); syncUpcoming();
 }
 
 // ----- Skip silence in podcasts: Titan finds the quiet gaps once per episode; the player jumps over them -----
@@ -801,6 +1016,7 @@ async function loadTrack(i, startAt) {
   if (tok !== P.tok) return;
   applySpeed(); applyVolume();
   ensureLevels([song, P.list[i + 1], P.list[i + 2]]); loadSilences(song);
+  audio.startAt = pos > 1 ? pos : 0;   // the new player starts right there instead of seeking after it has started
   audio.src = srcFor(song);   // a downloaded copy (Android app) wins: no data used, works offline
   P.loaded = true;
   const el = audio;
@@ -983,6 +1199,7 @@ onAudio('error', () => {
   if (P.errors <= 3 && P.index + 1 < P.list.length) setTimeout(() => next(true), 800);
 });
 document.addEventListener('visibilitychange', () => {
+  if (NATIVE_ENGINE) nativeCmd({ c: 'visible', v: document.visibilityState === 'visible' });   // the app reports the position less often when nobody is looking
   if (document.visibilityState === 'hidden') {
     const s = cur();
     if (s && P.loaded) saveBookmark(s, audio.currentTime);
@@ -1040,7 +1257,7 @@ if ('mediaSession' in navigator) {
 }
 
 // ----- Android app wrapper (the APK): native notification, lock-screen and Bluetooth controls -----
-if (window.TRNative) {
+if (window.TRNative && !NATIVE_ENGINE) {
   const pushNative = () => {
     const s = cur();
     if (!s) { TRNative.clear(); return; }
@@ -2413,16 +2630,27 @@ function settingsSheet() {
     items: [
       { header: 'Playback' },
       { icon: levelOn() ? 'check' : null, label: `Volume leveling: ${on(levelOn())}`, run: () => { lsSet('tr.level', !levelOn()); S.lufs.clear(); applyVolume(); if (levelOn()) ensureLevels([cur(), P.list[P.index + 1]]); toast(`Volume leveling ${on(levelOn()).toLowerCase()}`, 'ok', 2200); } },
-      { icon: gaplessOn() ? 'check' : null, label: `Gapless playback: ${xf > 0 ? 'On (crossfade)' : on(gaplessOn())}`, run: () => { if (xf > 0) { toast('Turn crossfade off to change this', '', 2500); return; } lsSet('tr.gapless', !lsGet('tr.gapless', false)); xfReset(); toast(`Gapless ${on(lsGet('tr.gapless', false)).toLowerCase()}`, 'ok', 2200); } },
-      { icon: xf > 0 ? 'check' : null, label: `Crossfade: ${xf > 0 ? xf + ' seconds' : 'Off'}`, run: () => crossfadeSheet() },
+      NATIVE_ENGINE && { icon: 'check', label: 'Gapless playback: always on (new player)', run: () => toast('The new player has no crossfade; songs follow each other without a gap', '', 3500) },
+      !NATIVE_ENGINE && { icon: gaplessOn() ? 'check' : null, label: `Gapless playback: ${xf > 0 ? 'On (crossfade)' : on(gaplessOn())}`, run: () => { if (xf > 0) { toast('Turn crossfade off to change this', '', 2500); return; } lsSet('tr.gapless', !lsGet('tr.gapless', false)); xfReset(); toast(`Gapless ${on(lsGet('tr.gapless', false)).toLowerCase()}`, 'ok', 2200); } },
+      !NATIVE_ENGINE && { icon: xf > 0 ? 'check' : null, label: `Crossfade: ${xf > 0 ? xf + ' seconds' : 'Off'}`, run: () => crossfadeSheet() },
       { icon: skipSilenceOn() ? 'check' : null, label: `Skip silence in podcasts: ${on(skipSilenceOn())}${saved > 0 ? ` (saved ${saved} min)` : ''}`, run: () => { lsSet('tr.skipsil', !skipSilenceOn()); if (cur()) loadSilences(cur()); toast(skipSilenceOn() ? 'Silences are skipped (analysed on Titan the first time an episode plays)' : 'Skip silence off', 'ok', 3200); } },
       { header: 'Music' },
       { icon: autoplayOn() ? 'check' : null, label: `Autoplay similar songs when the queue ends: ${on(autoplayOn())}`, run: () => { lsSet('tr.autoplay', !autoplayOn()); toast(`Autoplay ${on(autoplayOn()).toLowerCase()}`, 'ok', 2200); } },
-      { icon: FX.on ? 'check' : null, label: `Audio effects (equalizer, visualizer): ${on(FX.on)}`, run: () => setFx(!FX.on) },
+      !NATIVE_ENGINE && { icon: FX.on ? 'check' : null, label: `Audio effects (equalizer, visualizer): ${on(FX.on)}`, run: () => setFx(!FX.on) },
       { icon: 'eq', label: 'Equalizer', run: eqDialog },
+      window.TRNative && TRNative.playerVersion && TRNative.playerVersion() >= 2 && { header: 'Android app' },
+      window.TRNative && TRNative.playerVersion && TRNative.playerVersion() >= 2 && { icon: NATIVE_ENGINE ? 'check' : null, label: `New player (beta): ${on(NATIVE_ENGINE)}`, run: toggleNativePlayer },
       { header: 'Display' },
       { icon: 'sliders', label: `Theme: ${{ dark: 'Dark', light: 'Light', auto: 'Match phone' }[themeMode()]}`, run: () => themeSheet() },
     ] });
+}
+// Switching players reloads the app. The song that is playing stops (two players must never play at once).
+function toggleNativePlayer() {
+  const turnOn = !NATIVE_ENGINE;
+  if (NATIVE_ENGINE) nativeCmd({ c: 'stop' }); else { audio.pause(); try { TRNative.clear(); } catch (e) { /* old app */ } }
+  lsSet('tr.native', turnOn);
+  toast(turnOn ? 'Switching to the new player…' : 'Switching back to the old player…', '', 2000);
+  setTimeout(() => location.reload(), 500);
 }
 function crossfadeSheet() {
   const v = xfSec();
@@ -2899,12 +3127,17 @@ function openHealth() {
 }
 
 // ----- Audio effects: equalizer and visualizer (they share one Web Audio graph, opt-in) -----
-const FX = { on: lsGet('tr.fx', false), ctx: null, filters: [], pre: null, an: null };
+const FX = { on: lsGet('tr.fx', false) && !NATIVE_ENGINE, ctx: null, filters: [], pre: null, an: null };   // Web Audio effects belong to the browser player
 const EQ_BANDS = [[60, 'lowshelf', '60 Hz'], [230, 'peaking', '230 Hz'], [910, 'peaking', '900 Hz'], [3600, 'peaking', '3.6 kHz'], [14000, 'highshelf', '14 kHz']];
 const EQ_PRESETS = { Flat: [0, 0, 0, 0, 0], 'Bass boost': [6, 4, 0, 0, 0], 'Treble boost': [0, 0, 0, 3, 6], Vocal: [-2, -1, 3, 4, 1], Rock: [4, 2, -2, 2, 4],
   'Hip-hop': [5, 3, 0, 1, 2], Acoustic: [3, 1, 1, 2, 2], Classical: [3, 2, -1, 2, 3], 'Late night': [-3, 0, 1, 1, -1] };
 const eqState = () => lsGet('tr.eq', { preset: 'Flat', gains: [0, 0, 0, 0, 0] });
 function applyEq() {
+  if (NATIVE_ENGINE) {   // the new player has its own equalizer (the phone's), used only when some band is not flat
+    const g = eqState().gains;
+    nativeCmd({ c: 'eq', on: g.some(v => v !== 0), gains: g });
+    return;
+  }
   if (!FX.ctx) return;
   const g = eqState().gains;
   g.forEach((v, i) => { FX.filters[i].gain.value = v; });
@@ -2940,7 +3173,7 @@ function setFx(on) { lsSet('tr.fx', on); location.reload(); }
 function eqDialog() {
   dialog(box => {
     box.append(h('h3', {}, 'Equalizer'));
-    if (!FX.on) {
+    if (!FX.on && !NATIVE_ENGINE) {
       box.append(h('p', { class: 'note' }, 'The equalizer and the visualizer need “audio effects”. Turning them on reloads the app once. If sound ever stops while your screen is off, turn them off again in Playback & display.'),
         h('div', { class: 'btns' }, h('button', { class: 'pillbtn dark', onclick: () => closeTop() }, 'Not now'), h('button', { class: 'pillbtn', onclick: () => setFx(true) }, 'Turn on')));
       return;
@@ -2958,7 +3191,7 @@ function eqDialog() {
       sliders.append(h('div', { class: 'eq-row' }, h('span', { class: 'eq-f' }, label), input, val));
     });
     drawChips();
-    box.append(chips, sliders, h('div', { class: 'btns' }, h('button', { class: 'pillbtn dark', onclick: () => setFx(false) }, 'Turn audio effects off'), h('button', { class: 'pillbtn', onclick: () => closeTop() }, 'Done')));
+    box.append(chips, sliders, h('div', { class: 'btns' }, NATIVE_ENGINE ? null : h('button', { class: 'pillbtn dark', onclick: () => setFx(false) }, 'Turn audio effects off'), h('button', { class: 'pillbtn', onclick: () => closeTop() }, 'Done')));
   });
 }
 function vizCanvas() {
@@ -2987,6 +3220,7 @@ function vizCanvas() {
   return c;
 }
 initFx();
+if (NATIVE_ENGINE) applyEq();
 
 // =====================================================================
 // Search (library first, then YouTube Music / iTunes to add)
@@ -3135,26 +3369,43 @@ const songPayload = r => ({ title: r.title, artist: r.artist, album: r.album || 
   video_id: r.video_id || null, artwork: r.artwork || null, year: r.year || null });
 const albumPayload = r => ({ title: r.title, artist: r.artist, ytm_browse_id: r.ytm_browse_id || null, itunes_id: r.itunes_id || null });
 
+// What the library holds of a search result: songs are in it or not; an album can be missing, partly there or complete.
+I.partial = sv('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor"/>');
+const libState = (r, kind) => (kind === 'album' ? (r.library_state || (r.in_library ? 'full' : 'none')) : (r.in_library ? 'full' : 'none'));
 function catalogRow(r, kind) {
   const label = r.title;
+  const state = libState(r, kind);
   const add = (mode, name, id) => quickAdd(kind === 'song' ? { song: songPayload(r) } : { album: albumPayload(r) }, label, mode, name, id);
   const defaultAdd = () => (SR.addTo ? add('existing', SR.addTo.name, SR.addTo.id) : add('none'));
-  const sub = [kind === 'album' ? 'Album' : 'Song', r.artist, kind === 'song' ? r.album : r.year].filter(Boolean).join(' • ');
-  const right = r.in_library
-    ? h('span', { class: 'added', html: I.check + '' , style: 'width:22px;height:22px;display:flex;align-items:center;margin-right:10px', title: 'In your library' })
-    : h('button', { class: 'icon-btn', html: I.plus, 'aria-label': 'Add to library', onclick: e => { e.stopPropagation(); defaultAdd(); } });
+  const have = state === 'partial' ? (r.track_count ? `${r.library_count} of ${r.track_count} in library` : `${plural(r.library_count, 'song')} in library`) : null;
+  const sub = [kind === 'album' ? 'Album' : 'Song', r.artist, kind === 'song' ? r.album : r.year, have].filter(Boolean).join(' • ');
+  const iconStyle = 'width:22px;height:22px;display:flex;align-items:center;margin-right:10px';
+  const right = state === 'full'
+    ? h('span', { class: 'added', html: I.check + '', style: iconStyle, title: kind === 'album' ? 'Complete album in your library' : 'In your library' })
+    : state === 'partial'
+      ? h('span', { class: 'added partial', html: I.partial, style: iconStyle, title: `Part of this album is in your library${have ? ` (${have})` : ''}` })
+      : h('button', { class: 'icon-btn', html: I.plus, 'aria-label': 'Add to library', onclick: e => { e.stopPropagation(); defaultAdd(); } });
   const row = h('div', { class: 'row', onclick: () => catalogSheet(r, kind, add) },
     cover(r.artwork ? 'x' : null, 'sm', 100, { url: r.artwork }),
     h('div', { class: 'txt' }, h('div', { class: 't' }, r.title), h('div', { class: 's' }, r.explicit ? h('span', { style: 'background:#777;color:#000;font-size:10px;padding:0 4px;border-radius:2px;font-weight:700' }, 'E') : null, sub)),
     right);
   return row;
 }
+// Adding an album that is partly there only downloads what is missing (songs already in the library are skipped).
+function addLabel(r, kind) {
+  if (libState(r, kind) === 'partial') {
+    const missing = r.track_count ? r.track_count - r.library_count : 0;
+    return missing > 0 ? `Add the ${plural(missing, 'missing song')}` : 'Add the missing songs';
+  }
+  if (r.in_library) return 'Add to library again';
+  return kind === 'album' ? 'Add album to library' : 'Add to library';
+}
 function catalogSheet(r, kind, add) {
   sheet({
     title: r.title, sub: [r.artist, r.album || r.year].filter(Boolean).join(' • '), coverEl: cover(r.artwork ? 'x' : null, 'md', 100, { url: r.artwork }),
     items: [
       SR.addTo && { icon: 'plus', label: `Add to “${SR.addTo.name}”`, run: () => add('existing', SR.addTo.name, SR.addTo.id) },
-      { icon: 'plus', label: r.in_library ? 'Add to library again' : (kind === 'album' ? 'Add album to library' : 'Add to library'), run: () => add('none') },
+      { icon: 'plus', label: addLabel(r, kind), run: () => add('none') },
       { icon: 'playlist', label: 'Add to playlist…', run: () => pickPlaylistTarget((mode, name, id) => add(mode, name, id)) },
       kind === 'song' && { icon: 'note', label: 'About this song', run: () => aboutSong(r) },
       kind === 'album' && { icon: 'disc', label: 'Open album', run: () => openOnlineAlbum({ browseId: r.ytm_browse_id, artist: r.artist, title: r.title }) },
@@ -3563,6 +3814,6 @@ async function boot() {
 }
 
 // Browser tests only (localStorage 'tr.debug'): expose the pieces they drive
-if (localStorage.getItem('tr.debug')) Object.assign(window, { P, S, FX, cur, playQueue, onlineSong, nd, arr, api, lsSet, toast, closeAllLayers });
+if (localStorage.getItem('tr.debug')) Object.assign(window, { P, S, FX, cur, playQueue, onlineSong, nd, arr, api, lsSet, toast, getAudio: () => audio, enqueue, setSleep, applyEq, toggleNativePlayer, next, prev, closeAllLayers });
 boot();
 })();

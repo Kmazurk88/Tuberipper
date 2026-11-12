@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import catalog, deezer, downloader, library_index, library_merge, library_scan, metadata, musicbrainz, navidrome, notify, playlists, sourcing, tagger, lyrics, title_parser, config
+from . import catalog, deezer, diskcache, downloader, library_index, library_merge, library_scan, metadata, musicbrainz, navidrome, notify, playlists, sourcing, tagger, lyrics, title_parser, config
 from . import abs as audiobookshelf, activity, auth, compress, diag, durable, discover, health as health_deps, audio_analysis, library_delete, libhealth, meta, mixes, obs, player_api, podcasts, radio, recommend, secrets_setup, spotify_import, stats
 from .jobs import store, build_track
 from . import textmatch
@@ -89,9 +89,46 @@ def search(q: str, songs_only: bool = False):
     result = catalog.search(q, songs_only=True) if songs_only else catalog.search(q)
     for s in result.get("songs", []):
         s["in_library"] = library_index.has_song(LIBRARY_ROOT, s.get("artist", ""), s.get("title", ""))
-    for a in result.get("albums", []):
-        a["in_library"] = library_index.has_album(LIBRARY_ROOT, a.get("artist", ""), a.get("title", ""))
+    albums = result.get("albums", [])
+    for a in albums:
+        a["library_count"] = library_index.album_count(LIBRARY_ROOT, a.get("artist", ""), a.get("title", ""))
+        a["in_library"] = a["library_count"] > 0
+    _album_states(albums)
     return result
+
+
+ALBUM_TOTAL_LOOKUPS = 8
+
+
+def _album_total(browse_id: str):
+    """How many songs the album has, from its tracklist (remembered: an album's length doesn't change)."""
+    key = f"albumtotal:{browse_id}"
+    cached = diskcache.get(key)
+    if cached:
+        return cached
+    try:
+        album = catalog.album_tracks(browse_id)
+    except Exception:
+        return None
+    total = len((album or {}).get("tracks") or [])
+    if total:
+        diskcache.put(key, total)
+    return total or None
+
+
+def _album_states(albums: list) -> None:
+    """Sets library_state on each search album: "none" (no song of it in the library), "partial" or "full", and track_count
+    when it is known. The total comes from the search itself (iTunes) or, for an album that is partly or wholly owned and has
+    no count yet, from its tracklist. A total that can't be found counts as partial: better "some" than a wrong "all"."""
+    need = [a for a in albums if a.get("library_count") and not a.get("track_count") and a.get("ytm_browse_id")][:ALBUM_TOTAL_LOOKUPS]
+    if need:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for a, total in zip(need, pool.map(lambda x: _album_total(x["ytm_browse_id"]), need)):
+                if total:
+                    a["track_count"] = total
+    for a in albums:
+        n, total = a.get("library_count", 0), a.get("track_count")
+        a["library_state"] = "none" if not n else ("full" if total and n >= total else "partial")
 
 
 _suggest_cache: dict = {}

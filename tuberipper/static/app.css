@@ -125,6 +125,7 @@ h2.sec { font-size: 21px; margin: 26px 16px 12px; font-weight: 700; }
 .row .pin { width: 14px; height: 14px; color: var(--accent); flex: none; }
 .row .pin svg { width: 14px; height: 14px; fill: currentColor; }
 .row .added { color: var(--accent); font-size: 12.5px; }
+.row .added.partial { color: #e8a317; }   /* part of an album is in the library */
 .row .dur { color: var(--dim); font-size: 13px; flex: none; }
 .row .prog { margin-top: 5px; max-width: 220px; }
 .lib-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 10px; padding: 8px 16px; }

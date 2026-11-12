@@ -18,7 +18,7 @@ from .textmatch import base_title, is_alt_version
 TTL = 120  # seconds; downloads invalidate it right away
 
 _lock = threading.Lock()
-_cache = {"root": None, "built": 0.0, "songs": [], "keys": set(), "albums": set()}
+_cache = {"root": None, "built": 0.0, "songs": [], "keys": set(), "albums": {}}
 
 _TRACK_RE = re.compile(r"^(?:(\d+)-)?(\d+)\s+-\s+(.+)$")
 _FEAT_RE = re.compile(r"\s*(?:,|&|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b)\s.*$", re.IGNORECASE)
@@ -46,7 +46,7 @@ def _parse(stem: str) -> tuple:
 
 
 def _build(root: str) -> dict:
-    songs, keys, albums = [], set(), set()
+    songs, keys, albums = [], set(), {}   # albums: (artist, album) -> number of songs in the library
     try:
         artists = [a for a in os.listdir(root)
                    if not a.startswith(".") and a != playlists.PLAYLISTS_DIR and os.path.isdir(os.path.join(root, a))]
@@ -83,7 +83,8 @@ def _build(root: str) -> dict:
                 keys.add(song_key(artist, title))
                 count += 1
             if count:
-                albums.add((fold(artist), fold(tagger_canon(album))))
+                key = (fold(artist), fold(tagger_canon(album)))
+                albums[key] = albums.get(key, 0) + count
     return {"songs": songs, "keys": keys, "albums": albums}
 
 
@@ -111,8 +112,13 @@ def has_song(root: str, artist: str, title: str) -> bool:
     return song_key(artist, title) in _get(root)["keys"]
 
 
+def album_count(root: str, artist: str, album: str) -> int:
+    """How many songs of this album are in the library (0 = none)."""
+    return _get(root)["albums"].get((fold(_FEAT_RE.sub("", artist or "")), fold(tagger_canon(album))), 0)
+
+
 def has_album(root: str, artist: str, album: str) -> bool:
-    return (fold(_FEAT_RE.sub("", artist or "")), fold(tagger_canon(album))) in _get(root)["albums"]
+    return album_count(root, artist, album) > 0
 
 
 def _public(s: dict) -> dict:
