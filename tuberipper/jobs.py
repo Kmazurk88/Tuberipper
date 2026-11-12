@@ -1,10 +1,22 @@
-"""In-memory job store for the web UI. One job = one submitted URL
+"""Job store for the web UI. One job = one submitted URL
 (single video or playlist), holding a list of tracks moving through
-the review -> download -> tag -> lyrics pipeline."""
+the review -> download -> tag -> lyrics pipeline. Jobs live in memory and
+are copied to disk every few seconds (durable.py), so a restart can carry
+on with them (server.resume_jobs)."""
 
 import threading
 import time
 import uuid
+
+from . import durable
+
+KIND = "job"
+# Saved with the job. Not saved: the lock, the `refined` event (a restored job never waits for MusicBrainz) and
+# `prefetch` (a cache of lookups; the download asks again).
+PERSISTED = ("id", "url", "out_dir", "status", "error", "tracks", "album_candidates", "guess_album_id", "selected_album_id",
+             "album_hint", "expected_album", "is_playlist", "playlist_title", "playlist_mode", "playlist_name", "playlist_id",
+             "playlist_path", "playlist_status", "playlist_error", "phase", "refining", "user_picked_album", "lookup_gen",
+             "auto_accept", "notify", "needs_check", "created_at")
 
 JOB_TTL_SECONDS = 24 * 3600
 
@@ -47,6 +59,21 @@ class Job:
         self.needs_check = 0  # quick add: songs left out because the match was unsure  # quick add from search: download as soon as Deezer answers  # bumped per lookup run; an older run's results are dropped  # the user chose an album: MusicBrainz mustn't override it
         self.lock = threading.Lock()
         self.created_at = time.time()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {k: getattr(self, k) for k in PERSISTED}
+
+    @classmethod
+    def from_snapshot(cls, data: dict) -> "Job":
+        job = cls(data["id"], data.get("url", ""), data.get("out_dir", ""))
+        for k in PERSISTED:
+            if k in data:
+                setattr(job, k, data[k])
+        # The MusicBrainz album check, if one was running, ended with the restart; server.resume_jobs does it again.
+        job.was_refining = bool(job.refining)
+        job.refining = False
+        return job
 
     def to_dict(self):
         with self.lock:
@@ -121,11 +148,42 @@ class JobStore:
             # Jobs live in memory only; drop finished ones after a day so a
             # long-running container doesn't accumulate them forever.
             cutoff = time.time() - JOB_TTL_SECONDS
-            for old_id in [k for k, j in self._jobs.items()
-                           if j.created_at < cutoff and j.status in ("done", "cancelled", "error", "ready", "awaiting_confirmation")]:
+            old = [k for k, j in self._jobs.items()
+                   if j.created_at < cutoff and j.status in ("done", "cancelled", "error", "ready", "awaiting_confirmation")]
+            for old_id in old:
                 del self._jobs[old_id]
             self._jobs[job_id] = job
+        for old_id in old:
+            durable.delete(KIND, old_id)
         return job
+
+    def save_all(self) -> None:
+        """Writes every job to disk (durable.put skips the unchanged ones)."""
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            durable.put(KIND, job.id, job.snapshot())
+
+    def restore(self) -> list:
+        """Loads the saved jobs back into memory (skipping ones already there or older than a day); returns them."""
+        cutoff = time.time() - JOB_TTL_SECONDS
+        out = []
+        for data in durable.load(KIND):
+            if not data.get("id"):
+                continue
+            if data.get("created_at", 0) < cutoff and data.get("status") != "processing":
+                durable.delete(KIND, data["id"])
+                continue
+            try:
+                job = Job.from_snapshot(data)
+            except Exception:
+                continue
+            with self._lock:
+                if job.id in self._jobs:
+                    continue
+                self._jobs[job.id] = job
+            out.append(job)
+        return out
 
     def active(self):
         """The most recent job that's still running in the background, if any."""

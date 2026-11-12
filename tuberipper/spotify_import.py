@@ -6,7 +6,12 @@ own lookup is sure), and at the end the songs are put into one Navidrome
 playlist. Runs in the background, one import at a time; the UI polls
 /api/app/import/<id>. The matching rules come from the old import_playlist.py
 script. It talks to this same server over localhost so every song takes the
-same code path as adding one by hand."""
+same code path as adding one by hand.
+
+Imports survive a restart: the import, its songs and each song's result are saved with the download jobs
+(durable.py, every few seconds). On start, resume() carries on with an import that was running: songs that
+already have a result are not looked at again, and a song whose download job was under way waits for that
+same job (which carries on by itself) instead of starting a second one."""
 
 import csv
 import difflib
@@ -21,7 +26,7 @@ import uuid
 
 import requests
 
-from . import navidrome, notify, radio
+from . import durable, navidrome, notify, radio
 from .textmatch import artist_ok
 
 BASE = os.environ.get("TUBERIPPER_SELF_URL", "http://127.0.0.1:8000")
@@ -39,8 +44,11 @@ VERSIONY = re.compile(r"\s+[-–]\s+(?=[^-–]*\b(?:remaster(?:ed)?|version|edit
 NOT_THE_SONG = re.compile(r"karaoke|tribute|in the style of|originally performed|cover version|made famous|lullaby|8-bit", re.I)
 
 _jobs: dict = {}
+_work: dict = {}    # import id -> {"rows", "results": {index: [result, meta, detail, label]}, "pending": {index: job id}, "target"}
 _lock = threading.Lock()
 _running = None
+KIND = "import"
+KEEP_FINISHED = 2 * 24 * 3600   # a finished import's result stays viewable (and on disk) this long
 
 
 def parse_csv(text: str) -> list:
@@ -108,6 +116,14 @@ def _find(artists, title, secs):
     return None
 
 
+def _job_alive(job_id):
+    """True if this server still knows the job (after a restart: it was restored and carries on)."""
+    try:
+        return requests.get(f"{BASE}/api/jobs/{job_id}", timeout=30).status_code == 200
+    except requests.RequestException:
+        return False
+
+
 def _wait_for(job_id, timeout=420):
     end, idle, job = time.time() + timeout, 0, {}
     while time.time() < end:
@@ -124,17 +140,40 @@ def _wait_for(job_id, timeout=420):
     return job
 
 
-def _import_one(row):
-    """-> (result, meta, detail). result: added | already | review | nomatch | failed."""
-    cand = _find(row["artists"], row["title"], row["secs"])
-    if not cand:
-        return "nomatch", None, ""
-    meta = {k: cand.get(k) for k in ("title", "artist", "album", "duration", "explicit", "video_id", "artwork", "year")}
-    if cand.get("in_library"):
-        return "already", meta, ""
-    r = requests.post(f"{BASE}/api/jobs/catalog", json={"song": meta, "add": {"playlist_mode": "none", "notify": False}}, timeout=60)
-    r.raise_for_status()
-    job = _wait_for(r.json()["id"])
+class _ServerGone(Exception):
+    """This server stopped answering itself: it is shutting down (or restarting)."""
+
+
+def _import_one_safe(row, pending=None):
+    """_import_one, but "can't reach this very server" is not a result: that happens while the server shuts down, and
+    the song must then be left for the restart (not reported as failed). Waits up to a minute for the server to answer
+    again (a hiccup) and tries once more; raises _ServerGone if it doesn't."""
+    for attempt in range(2):
+        try:
+            return _import_one(row, pending)
+        except requests.ConnectionError:
+            if attempt or not _wait_for_server(60):
+                raise _ServerGone()
+
+
+def _import_one(row, pending=None):
+    """-> (result, meta, detail). result: added | already | review | nomatch | failed.
+    pending: {"job", "meta"} of a download this song already started before a restart; wait for that one."""
+    if pending and pending.get("job") and _job_alive(pending["job"]):
+        meta, job_id = pending["meta"], pending["job"]
+    else:
+        cand = _find(row["artists"], row["title"], row["secs"])
+        if not cand:
+            return "nomatch", None, ""
+        meta = {k: cand.get(k) for k in ("title", "artist", "album", "duration", "explicit", "video_id", "artwork", "year")}
+        if cand.get("in_library"):
+            return "already", meta, ""
+        r = requests.post(f"{BASE}/api/jobs/catalog", json={"song": meta, "add": {"playlist_mode": "none", "notify": False}}, timeout=60)
+        r.raise_for_status()
+        job_id = r.json()["id"]
+        if row.get("_on_job"):
+            row["_on_job"]({"job": job_id, "meta": meta})
+    job = _wait_for(job_id)
     tr = (job.get("tracks") or [{}])[0]
     if job.get("status") == "done" and tr.get("status") == "done":
         return "added", meta, ""
@@ -167,9 +206,89 @@ def start(rows: list, name: str, playlist_id: str | None = None) -> dict:
                "counts": {"added": 0, "already": 0, "review": 0, "nomatch": 0, "failed": 0}, "problems": [], "unplaced": [],
                "playlist": "", "playlist_id": None, "started": time.time()}
         _jobs[imp["id"]] = imp
+        _work[imp["id"]] = {"rows": rows, "results": {}, "pending": {}, "target": playlist_id}
         _running = imp["id"]
+    _save(imp["id"])
     threading.Thread(target=_run, args=(imp, rows, playlist_id), daemon=True).start()
     return imp
+
+
+def _save(import_id) -> None:
+    with _lock:
+        imp, work = _jobs.get(import_id), _work.get(import_id)
+        if not imp:
+            return
+        data = {"imp": dict(imp, counts=dict(imp["counts"]), problems=list(imp["problems"]))}
+        if work:
+            data["work"] = {"rows": work["rows"], "results": dict(work["results"]), "pending": dict(work["pending"]), "target": work["target"]}
+    durable.put(KIND, import_id, data)
+
+
+def save_all() -> None:
+    for import_id in list(_jobs):
+        _save(import_id)
+
+
+def _recount(imp, rows, results) -> None:
+    """counts / problems / done from the per-song results (after a restart, so nothing is counted twice)."""
+    imp["counts"] = {"added": 0, "already": 0, "review": 0, "nomatch": 0, "failed": 0}
+    imp["problems"] = []
+    for i in sorted(results, key=int):
+        result, _meta, detail, label = results[i]
+        imp["counts"][result] += 1
+        if result in ("review", "nomatch", "failed"):
+            imp["problems"].append({"song": label, "result": result, "detail": detail})
+    imp["done"] = len(results)
+
+
+def _wait_for_server(timeout=180) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if requests.get(f"{BASE}/api/health", timeout=5).status_code == 200:
+                return True
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+    return False
+
+
+def resume() -> list:
+    """Loads saved imports; carries on with one that was running. Returns the ids it restarted."""
+    global _running
+    restarted = []
+    for data in durable.load(KIND):
+        imp, work = data.get("imp") or {}, data.get("work")
+        if not imp.get("id"):
+            continue
+        if imp.get("status") != "running" and time.time() - imp.get("started", 0) > KEEP_FINISHED:
+            durable.delete(KIND, imp["id"])
+            continue
+        with _lock:
+            if imp["id"] in _jobs:
+                continue
+            _jobs[imp["id"]] = imp
+            if imp.get("status") != "running":
+                continue
+            if not work or (_running and _running != imp["id"]):
+                imp["status"], imp["playlist"] = "error", "Import stopped by a restart and could not carry on."
+                continue
+            work["results"] = {str(k): v for k, v in (work.get("results") or {}).items()}
+            work["pending"] = {str(k): v for k, v in (work.get("pending") or {}).items()}
+            _work[imp["id"]] = work
+            _recount(imp, work["rows"], work["results"])
+            imp["current"] = "Carrying on after a restart…"
+            _running = imp["id"]
+
+        def go(imp=imp, work=work):
+            if not _wait_for_server():
+                imp["status"], imp["playlist"] = "error", "Import stopped: the server did not come back after a restart."
+                _save(imp["id"])
+                return
+            _run(imp, work["rows"], work["target"])
+        threading.Thread(target=go, daemon=True).start()
+        restarted.append(imp["id"])
+    return restarted
 
 
 def get(import_id: str):
@@ -209,17 +328,32 @@ def _playlist_ids(entries, retries=2, with_names=False):
 
 
 def _run(imp, rows, playlist_id):
-    metas = []
+    metas, gone = [], False
+    state = _work.setdefault(imp["id"], {"rows": rows, "results": {}, "pending": {}, "target": playlist_id})
     try:
         lock = threading.Lock()
 
-        def work(row):
+        def work(item):
+            i, row = item
+            key = str(i)
             label = f"{', '.join(row['artists'])} - {row['title']}"
+            with lock:
+                done = state["results"].get(key)
+            if done:   # finished before a restart
+                return (row["artists"], row["title"], done[1]) if done[1] else None
+
+            def on_job(p):
+                with lock:
+                    state["pending"][key] = p
             try:
-                result, meta, detail = _import_one(row)
+                result, meta, detail = _import_one_safe(dict(row, _on_job=on_job), state["pending"].get(key))
+            except _ServerGone:
+                raise
             except Exception as exc:
                 result, meta, detail = "failed", None, f"{type(exc).__name__}: {exc}"
             with lock:
+                state["results"][key] = [result, meta, detail, label]
+                state["pending"].pop(key, None)
                 imp["counts"][result] += 1
                 if result in ("review", "nomatch", "failed"):
                     imp["problems"].append({"song": label, "result": result, "detail": detail})
@@ -229,14 +363,22 @@ def _run(imp, rows, playlist_id):
 
         # A few songs at a time; map() keeps the CSV order.
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            metas = [m for m in pool.map(work, rows) if m]
+            metas = [m for m in pool.map(work, enumerate(rows)) if m]
         _make_playlist(imp, metas, playlist_id, imp["counts"]["added"] > 0)
         imp["status"] = "done"
+    except _ServerGone:
+        # The server is going down: leave the import "running" with the songs that have no result yet; resume()
+        # carries on after the restart. No report, no Discord message for a run that isn't finished.
+        gone = True
     except Exception as exc:
         imp["status"] = "error"
         imp["playlist"] = f"Import stopped: {type(exc).__name__}: {exc}"
     finally:
         imp["current"] = ""
+        if gone:
+            return
+        _work.pop(imp["id"], None)    # the songs list is only needed while running
+        _save(imp["id"])
         _save_report(imp)
         _discord(imp)
 

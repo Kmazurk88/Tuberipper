@@ -361,12 +361,14 @@ def write_tags(filepath: str, meta: dict, artwork_bytes: bytes | None, library_r
     os.makedirs(os.path.dirname(new_path), exist_ok=True)
 
     if os.path.abspath(new_path) != os.path.abspath(filepath):
-        if os.path.exists(new_path):
-            os.remove(new_path)
-        # shutil.move (not os.replace/os.rename) -- the source is often a
-        # local temp dir and the destination a network share (a different
-        # filesystem/drive), which a same-filesystem rename can't handle.
-        shutil.move(filepath, new_path)
+        # Copy next to the target under a hidden temporary name, then rename it into place: the source is often a
+        # local temp dir and the destination a network share (a different filesystem, so no direct rename), and a
+        # restart in the middle of the copy must never leave half a song in the library (it would then count as
+        # "already there"). A leftover hidden .part file is ignored by Navidrome.
+        part = os.path.join(os.path.dirname(new_path), "." + os.path.basename(new_path) + ".part")
+        shutil.copy2(filepath, part)   # like shutil.move across filesystems: keeps mode and times
+        os.replace(part, new_path)
+        os.remove(filepath)
 
     return new_path
 

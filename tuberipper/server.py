@@ -1,6 +1,7 @@
 """Web API + mobile UI for tuberipper. Submit a URL, review/edit parsed
 tracks, then kick off download+tag+lyrics processing in the background."""
 
+import contextlib
 import os
 import re
 import shutil
@@ -20,12 +21,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import catalog, deezer, downloader, library_index, library_merge, library_scan, metadata, musicbrainz, navidrome, notify, playlists, sourcing, tagger, lyrics, title_parser, config
-from . import abs as audiobookshelf, activity, auth, compress, discover, audio_analysis, library_delete, libhealth, meta, mixes, player_api, podcasts, radio, recommend, secrets_setup, stats
+from . import abs as audiobookshelf, activity, auth, compress, durable, discover, audio_analysis, library_delete, libhealth, meta, mixes, player_api, podcasts, radio, recommend, secrets_setup, spotify_import, stats
 from .jobs import store, build_track
 from . import textmatch
 from .textmatch import base_title, text_score
 
-app = FastAPI(title="tuberipper")
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    _on_start()    # defined below, with the restart handling
+    yield
+    _on_stop()
+
+
+app = FastAPI(title="tuberipper", lifespan=_lifespan)
 
 # No login: this is a personal tool reachable only on the LAN and the
 # tailnet (VPN), never exposed publicly. Permissive CORS because the phone UI
@@ -882,6 +890,109 @@ def _finish_job(job_id: str):
 
 DOWNLOAD_WORKERS = 3
 _tag_lock = threading.Lock()
+
+
+# ---------- Carrying on after a restart ----------
+# Jobs are saved to disk every few seconds (durable.py). On start, a job that was mid-way picks up where it was:
+#   - downloading (some songs queued / downloading / tagging): the unfinished songs go back in the queue, finished
+#     ones stay done (a song that did reach the library is skipped as "already there");
+#   - looking up: the lookup runs again;
+#   - a quick add whose final check was cut off: it is decided now.
+# If the MusicBrainz album check was running, it is done again first (else the songs would be filed under Deezer's
+# first answer, often a compilation). Everything else (waiting for the user, done, failed) is simply shown again.
+DOWNLOAD_STATES = {"queued_download", "downloading", "tagging", "fetching_lyrics"}
+LOOKUP_STATES = {"pending_review", "queued_lookup", "looking_up", "looked_up", "finding_audio", "audio_found"}
+
+
+def _refine_again(job) -> None:
+    """Redoes the MusicBrainz album check a restart cut off. The tracks still hold Deezer's answers (the check only
+    writes its results at the end), which are what it starts from."""
+    if not getattr(job, "was_refining", False):
+        return
+    job.was_refining = False
+    with job.lock:
+        tracks = [t for t in job.tracks if t["accepted"] and t["status"] in ("awaiting_confirmation", "queued_download")]
+        quick = [t.get("match") for t in tracks]
+        gen = job.lookup_gen
+        job.refining = True
+        job.phase = "Checking the album"
+    try:
+        if tracks:
+            _refine_with_musicbrainz(job, tracks, quick, job.album_hint, (job.url or "").startswith("catalog-album:"), gen)
+    except Exception:
+        traceback.print_exc()   # Deezer's answer stands
+    finally:
+        with job.lock:
+            job.refining = False
+            if job.phase.startswith("Checking the album"):
+                job.phase = ""
+
+
+def resume_jobs() -> dict:
+    """Loads the saved jobs and restarts the interrupted ones. Returns what it did, for the log and tests."""
+    did = {"downloads": [], "lookups": [], "quick_adds": [], "kept": 0}
+    for job in store.restore():
+        with job.lock:
+            states = {t["status"] for t in job.tracks}
+            if job.status == "processing" and (states & DOWNLOAD_STATES or not states & LOOKUP_STATES):
+                for t in job.tracks:
+                    if t["status"] in DOWNLOAD_STATES:
+                        t["status"], t["detail"] = "awaiting_confirmation", ""
+                action = "downloads"
+            elif job.status == "processing":
+                action = "lookups"
+            elif job.status == "awaiting_confirmation" and job.auto_accept:
+                action = "quick_adds"
+            else:
+                action = None
+        if action == "downloads":
+            def download(job=job):
+                _refine_again(job)
+                _finish_job(job.id)
+            threading.Thread(target=download, daemon=True).start()
+        elif action == "lookups":
+            threading.Thread(target=_match_job, args=(job.id,), daemon=True).start()
+        elif action == "quick_adds":
+            def decide(job=job):
+                _refine_again(job)
+                job.auto_accept = False
+                with job.lock:
+                    tracks = [t for t in job.tracks if t["accepted"] and t["status"] == "awaiting_confirmation"]
+                _quick_add_decide(job, tracks, final=True)
+            threading.Thread(target=decide, daemon=True).start()
+        elif job.status == "awaiting_confirmation" and getattr(job, "was_refining", False):
+            threading.Thread(target=_refine_again, args=(job,), daemon=True).start()   # the user sees the corrected albums
+        if action:
+            did[action].append(job.id)
+        else:
+            did["kept"] += 1
+    return did
+
+
+_started = False
+
+
+def _on_start():
+    # The public port runs the same app (run.py), so this is called twice: only the first time counts.
+    global _started
+    if _started:
+        return
+    _started = True
+    try:
+        did = resume_jobs()
+        if any(did[k] for k in ("downloads", "lookups", "quick_adds")) or did["kept"]:
+            print(f"resumed after restart: {did}", flush=True)
+        spotify_import.resume()
+    except Exception:
+        traceback.print_exc()   # never keep the app from starting
+    durable.register(store.save_all)
+    durable.register(spotify_import.save_all)
+    durable.start()
+
+
+def _on_stop():
+    durable.save_now()
+    durable.freeze()
 
 
 def _skip_if_existing(job, track) -> bool:
